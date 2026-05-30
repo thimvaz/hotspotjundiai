@@ -1,0 +1,9 @@
+streamlit-folium
+streamlit>=1.35.0
+leafmap>=0.30.0
+folium>=0.16.0
+rasterio>=1.3.0
+numpy>=1.26.0
+matplotlib>=3.8.0
+Pillow>=10.0.0
+
