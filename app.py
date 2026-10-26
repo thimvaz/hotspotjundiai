@@ -8,7 +8,7 @@ import numpy as np
 from streamlit_folium import st_folium
 from utils.data_loader import carregar_banda, carregar_mapbiomas, listar_arquivos_disponiveis
 from utils.raster_utils import calcular_hotspots, calcular_persistencia, calcular_anomalia
-from utils.map_builder import construir_mapa
+from utils.map_builder import criar_mapa_base, construir_camadas
 
 st.set_page_config(
     page_title="Ilhas de Calor — Jundiaí/SP",
@@ -30,56 +30,41 @@ st.markdown("""
 # ── Constantes ────────────────────────────────────────────────────────────────
 ANOS   = [2017, 2019, 2021, 2023, 2025]
 BANDAS = {"LST (°C)": 1, "NDVI": 2, "NDBI": 3, "MNDWI": 4}
-CENTRO_PADRAO = [-23.19, -46.89]
-ZOOM_PADRAO   = 12
+CENTRO = [-23.19, -46.89]
+ZOOM   = 12
 
-# ── Estado da Sessão (Preservação de Zoom e Centro) ───────────────────────────
-if "map_center" not in st.session_state:
-    st.session_state.map_center = CENTRO_PADRAO
-if "map_zoom" not in st.session_state:
-    st.session_state.map_zoom = ZOOM_PADRAO
-
-def resetar_visao_mapa():
-    """Restaura o enquadramento padrão de Jundiaí."""
-    st.session_state.map_center = CENTRO_PADRAO
-    st.session_state.map_zoom = ZOOM_PADRAO
-
-def renderizar_mapa_preservando_zoom(m, key_mapa: str):
-    """Renderiza o mapa Folium e salva qualquer alteração de zoom/pan na sessão."""
-    saida = st_folium(
-        m,
-        height=560,
-        use_container_width=True,
-        key=key_mapa,
-        returned_objects=["center", "zoom"],
-    )
-    if saida:
-        if saida.get("center"):
-            novo_centro = [saida["center"]["lat"], saida["center"]["lng"]]
-            # Atualiza apenas se houve mudança real para evitar loops
-            if novo_centro != st.session_state.map_center:
-                st.session_state.map_center = novo_centro
-        if saida.get("zoom") is not None:
-            if saida["zoom"] != st.session_state.map_zoom:
-                st.session_state.map_zoom = saida["zoom"]
-
-# ── Helpers Cacheados para Performance ────────────────────────────────────────
+# ── Helpers Cacheados ─────────────────────────────────────────────────────────
 @st.cache_data(show_spinner=False)
 def obter_persistencia_cacheada(anos_tupla: tuple):
-    """Calcula e faz cache da persistência para evitar releitura de disco ao mexer em sliders."""
     mascaras = []
     bounds_ref = None
     for a in anos_tupla:
         lst_a, bounds, _ = carregar_banda(a, 1)
-        mascaras.append(calcular_hotspots(lst_a))
+        mascaras.append(calcular_hotspots(lst_a, manter_nan=True))
     persistencia, bounds_ref = calcular_persistencia(mascaras, bounds)
-    persistencia = persistencia.astype(np.float32)
-    lst_ref, _, _ = carregar_banda(anos_tupla[-1], 1)
-    persistencia[np.isnan(lst_ref)] = np.nan
     return persistencia, bounds_ref
 
 def _cmap_para_banda(banda_num: int) -> str:
     return {1: "RdYlBu_r", 2: "RdYlGn", 3: "RdYlBu_r", 4: "Blues"}.get(banda_num, "viridis")
+
+def _barra_gradiente_html(cmap_nome: str, vmin: float, vmax: float, label: str) -> str:
+    """Renderiza uma barra de cores contínua leve e limpa abaixo do mapa."""
+    grad = {
+        "RdYlBu_r": "linear-gradient(to right, #313695, #74add1, #ffffbf, #f46d43, #a50026)",
+        "RdYlGn":   "linear-gradient(to right, #a50026, #f46d43, #ffffbf, #66bd63, #006837)",
+        "Blues":    "linear-gradient(to right, #f7fbff, #6baed6, #08306b)",
+    }.get(cmap_nome, "linear-gradient(to right, #440154, #21918c, #fde725)")
+    return f"""
+    <div style="margin: 6px 0 14px 0; font-size: 0.85rem;">
+        <strong>{label}</strong>
+        <div style="background: {grad}; height: 14px; border-radius: 4px; border: 1px solid #ccc; margin: 4px 0;"></div>
+        <div style="display: flex; justify-content: space-between; color: #555;">
+            <span>{vmin:.2f}</span>
+            <span>{(vmin + vmax) / 2:.2f}</span>
+            <span>{vmax:.2f}</span>
+        </div>
+    </div>
+    """
 
 def _texto_interpretacao(camada: str):
     textos = {
@@ -153,7 +138,9 @@ with st.sidebar:
         "Mapa base",
         ["OpenStreetMap", "CartoDB Positron", "Esri Satellite"],
     )
-    st.button("🔄 Resetar Zoom do Mapa", on_click=resetar_visao_mapa, use_container_width=True)
+
+# Mapa base único (só muda se o usuário trocar o provedor de tiles)
+mapa_base = criar_mapa_base(CENTRO, ZOOM, basemap)
 
 # ── Página: Temperatura e Hotspots ────────────────────────────────────────────
 if pagina == "🌡️ Temperatura e Hotspots":
@@ -178,20 +165,27 @@ if pagina == "🌡️ Temperatura e Hotspots":
     c4.metric("Área de hotspot", f"{pct_hot:.1f}%")
 
     hotspot_mask = calcular_hotspots(lst) if mostrar_hotspots else None
-    
-    m = construir_mapa(
+    cmap_atual = _cmap_para_banda(banda_num)
+
+    fg, vmin_calc, vmax_calc = construir_camadas(
         raster       = dados,
         bounds       = bounds,
         camada_nome  = f"{camada} · {ano}",
-        cmap         = _cmap_para_banda(banda_num),
+        cmap         = cmap_atual,
         opacidade    = opacidade,
-        centro       = st.session_state.map_center,
-        zoom         = st.session_state.map_zoom,
-        basemap      = basemap,
         hotspot_mask = hotspot_mask,
     )
-    
-    renderizar_mapa_preservando_zoom(m, key_mapa="mapa_temp_hotspots")
+
+    st_folium(
+        mapa_base,
+        feature_group_to_add=fg,
+        height=560,
+        use_container_width=True,
+        key="mapa_jundiai",
+        returned_objects=[],  # Zero recarregamentos ao dar zoom ou arrastar!
+    )
+
+    st.markdown(_barra_gradiente_html(cmap_atual, vmin_calc, vmax_calc, f"{camada} ({ano})"), unsafe_allow_html=True)
 
     with st.expander("ℹ️ Como interpretar"):
         _texto_interpretacao(camada)
@@ -210,7 +204,6 @@ elif pagina == "📍 Persistência de Hotspots":
     PIXEL_KM2 = (30 * 30) / 1e6
     n_anos = len(anos_sel)
 
-    # Métricas dinâmicas consistentes com a quantidade de anos selecionados
     scores_unicos = sorted(list({max(2, n_anos - 1), n_anos}))
     cols = st.columns(len(scores_unicos) + 1)
     cols[0].metric("Anos analisados", n_anos)
@@ -219,20 +212,24 @@ elif pagina == "📍 Persistência de Hotspots":
         label = f"≥ {score} anos" if score < n_anos else f"Crônico ({n_anos} anos)"
         cols[idx + 1].metric(label, f"{n_pixels * PIXEL_KM2:.1f} km²")
 
-    m = construir_mapa(
+    fg, _, _ = construir_camadas(
         raster      = persistencia,
         bounds      = bounds_ref,
         camada_nome = "Persistência (anos)",
         cmap        = "persistencia",
         opacidade   = opacidade,
-        centro      = st.session_state.map_center,
-        zoom        = st.session_state.map_zoom,
-        basemap     = basemap,
         vmin        = 0,
         vmax        = n_anos,
     )
-    
-    renderizar_mapa_preservando_zoom(m, key_mapa="mapa_persistencia")
+
+    st_folium(
+        mapa_base,
+        feature_group_to_add=fg,
+        height=560,
+        use_container_width=True,
+        key="mapa_jundiai",
+        returned_objects=[],
+    )
 
     st.markdown(_legenda_persistencia(n_anos), unsafe_allow_html=True)
 
@@ -257,30 +254,21 @@ elif pagina == "🎯 Zonas Prioritárias":
     )
 
     with st.spinner("Cruzando matrizes e calculando prioridades..."):
-        # 1. Obtém persistência já em cache (instantâneo ao mover o slider de NDVI!)
         persistencia, bounds_ref = obter_persistencia_cacheada(tuple(ANOS))
-
-        # 2. Carrega NDVI do ano mais recente (2025)
         ndvi_2025, _, _ = carregar_banda(2025, 2)
 
-        # 3. Inicia matriz de prioridades vazia
         prioridade = np.full(persistencia.shape, np.nan, dtype=np.float32)
 
-        # 4. Define as Condicionais Lógicas
         c_cronico       = persistencia >= 4
         c_intermitente  = (persistencia == 2) | (persistencia == 3)
         c_ndvi_baixo    = ndvi_2025 < limiar_ndvi
         c_ndvi_razoavel = ndvi_2025 >= limiar_ndvi
 
-        # Aplica as regras de negócio
         prioridade[c_intermitente & c_ndvi_baixo] = 1   # Amarelo
         prioridade[c_cronico & c_ndvi_razoavel]   = 2   # Laranja
         prioridade[c_cronico & c_ndvi_baixo]      = 3   # Vermelho
+        prioridade[np.isnan(persistencia)]        = np.nan
 
-        # Aplica máscara do contorno do município (já herdada de persistencia)
-        prioridade[np.isnan(persistencia)] = np.nan
-
-    # Estatísticas de Área
     PIXEL_KM2 = (30 * 30) / 1e6
     area_vermelha = np.sum(prioridade == 3) * PIXEL_KM2
     area_laranja  = np.sum(prioridade == 2) * PIXEL_KM2
@@ -291,20 +279,24 @@ elif pagina == "🎯 Zonas Prioritárias":
     c2.metric("🟠 Monitoramento", f"{area_laranja:.1f} km²")
     c3.metric("🟡 Prevenção", f"{area_amarela:.1f} km²")
 
-    m = construir_mapa(
+    fg, _, _ = construir_camadas(
         raster      = prioridade,
         bounds      = bounds_ref,
         camada_nome = "Prioridade de Intervenção",
         cmap        = "prioridades",
         opacidade   = opacidade,
-        centro      = st.session_state.map_center,
-        zoom        = st.session_state.map_zoom,
-        basemap     = basemap,
         vmin        = 1,
         vmax        = 3,
     )
-    
-    renderizar_mapa_preservando_zoom(m, key_mapa="mapa_prioridades")
+
+    st_folium(
+        mapa_base,
+        feature_group_to_add=fg,
+        height=560,
+        use_container_width=True,
+        key="mapa_jundiai",
+        returned_objects=[],
+    )
 
     st.markdown("""
 <div style='padding:16px; background-color:#f8f9fa; border-radius:8px; border-left: 5px solid #007bff; margin-top:10px;'>
