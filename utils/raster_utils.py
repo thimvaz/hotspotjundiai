@@ -22,10 +22,12 @@ def calcular_hotspots(lst: np.ndarray, manter_nan: bool = False) -> np.ndarray:
     """
     valido = np.isfinite(lst)
     if not np.any(valido):
-        return np.full_like(lst, np.nan, dtype=np.float32) if manter_nan else np.zeros_like(lst, dtype=bool)
+        if manter_nan:
+            return np.full_like(lst, np.nan, dtype=np.float32)
+        return np.zeros_like(lst, dtype=bool)
 
-     pixels_validos = lst[valido]
-    media  = float(np.mean(pixels_validos))
+    pixels_validos = lst[valido]
+    media = float(np.mean(pixels_validos))
     desvio = float(np.std(pixels_validos))
     limiar = media + 2.0 * desvio
 
@@ -77,9 +79,13 @@ def calcular_persistencia(mascaras: list, bounds_ref) -> tuple:
     return soma, bounds_ref
 
 
-def alinhar_para(fonte: np.ndarray, bounds_fonte,
-                 alvo_shape: tuple, bounds_alvo,
-                 crs_str: str = "EPSG:4326") -> np.ndarray:
+def alinhar_para(
+    fonte: np.ndarray,
+    bounds_fonte,
+    alvo_shape: tuple,
+    bounds_alvo,
+    crs_str: str = "EPSG:4326",
+) -> np.ndarray:
     """
     Reprojeta `fonte` para a grade de `alvo_shape` com nearest neighbor,
     preservando valores NaN nas bordas externas.
@@ -90,25 +96,28 @@ def alinhar_para(fonte: np.ndarray, bounds_fonte,
 
     tf_src = from_bounds(b0.left, b0.bottom, b0.right, b0.top, w0, h0)
     tf_dst = from_bounds(b1.left, b1.bottom, b1.right, b1.top, w1, h1)
-    crs    = CRS.from_string(crs_str)
+    crs = CRS.from_string(crs_str)
 
     dst = np.full((h1, w1), np.nan, dtype=np.float32)
     reproject(
-        source        = fonte.astype(np.float32),
-        destination   = dst,
-        src_transform = tf_src,
-        src_crs       = crs,
-        dst_transform = tf_dst,
-        dst_crs       = crs,
-        resampling    = Resampling.nearest,
-        src_nodata    = np.nan,
-        dst_nodata    = np.nan,
+        source=fonte.astype(np.float32),
+        destination=dst,
+        src_transform=tf_src,
+        src_crs=crs,
+        dst_transform=tf_dst,
+        dst_crs=crs,
+        resampling=Resampling.nearest,
+        src_nodata=np.nan,
+        dst_nodata=np.nan,
     )
     return dst
 
 
-def estatisticas_por_classe(lst: np.ndarray, classes: np.ndarray,
-                            mapa_classes: dict) -> dict:
+def estatisticas_por_classe(
+    lst: np.ndarray,
+    classes: np.ndarray,
+    mapa_classes: dict,
+) -> dict:
     """
     Calcula LST média por classe MapBiomas de forma vetorizada.
 
@@ -125,7 +134,7 @@ def estatisticas_por_classe(lst: np.ndarray, classes: np.ndarray,
 
     resultado = {}
     for codigo, nome in mapa_classes.items():
-        mask_classe = (cls_val == codigo)
+        mask_classe = cls_val == codigo
         n_pixels = int(np.count_nonzero(mask_classe))
         if n_pixels > 0:
             resultado[nome] = (float(np.mean(lst_val[mask_classe])), n_pixels)
